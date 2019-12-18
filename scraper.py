@@ -9,7 +9,10 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+import errno
 
+INPUT_TESTCASE_FORMAT = "{problem}/in{number}"
+OUTPUT_TESTCASE_FORMAT = "{problem}/out{number}"
 
 class ContestHTMLParser(html.parser.HTMLParser):
     def __init__(self, *args, **kwargs):
@@ -108,6 +111,18 @@ class ProblemHTMLParser(html.parser.HTMLParser):
         return examples
 
 
+def write_example(path, data):
+    if not os.path.exists(os.path.dirname(path)):
+        try:
+            os.makedirs(os.path.dirname(path))
+        except OSError as exc: # Guard against race condition
+            if exc.errno != errno.EEXIST:
+                raise
+
+    with open(path, "w") as f:
+        f.write(data)
+
+
 def download_problem(contest_uri, problem):
     problem_uri = contest_uri + '/problem/' + problem
     print('Retrieving', problem_uri, '...')
@@ -129,24 +144,41 @@ def download_problem(contest_uri, problem):
 
     examples = parser.getExamples()
 
-    problem_dir = problem.lower()
-    if not os.path.isdir(problem_dir):
-        os.mkdir(problem_dir)
-
     for i, example in enumerate(examples, 1):
-        input_path = os.path.join(problem_dir, 'in{}'.format(i))
-        with open(input_path, 'w') as f:
-            f.write(example[0])
+        input_path = INPUT_TESTCASE_FORMAT.format(problem=problem, number=i)
+        write_example(input_path, example[0])
 
-        output_path = os.path.join(problem_dir, 'out{}'.format(i))
-        with open(output_path, 'w') as f:
-            f.write(example[1])
+        output_path = OUTPUT_TESTCASE_FORMAT.format(problem=problem, number=i)
+        write_example(output_path, example[1])
 
     print('Wrote {} examples for problem {}.'.format(len(examples), problem))
 
 
+def retrieve():
+    print('Retrieving ', contest_uri, '... ', sep='', end='')
+    sys.stdout.flush()
+    contest_html = urllib.request.urlopen(contest_uri).read().decode('utf-8')
+    print('OK ({} bytes).'.format(len(contest_html)))
+
+    parser = ContestHTMLParser()
+    parser.feed(contest_html)
+    problems = parser.getProblems()
+
+    print('Found', len(problems), 'problems.')
+
+    if args.keep_trying and len(problems) == 0:
+        retrieve()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        for problem in problems:
+            executor.submit(download_problem, contest_uri, problem)
+
+
 parser = argparse.ArgumentParser(description='Codeforces scraper.  https://github.com/lovrop/codeforces-scraper')
 parser.add_argument('contest', help='URI or numerical ID of contest to scrape')
+parser.add_argument('--keep-trying', dest='keep_trying', action='store_const', const=True, default=False,
+                    help='Boolean indicating to keep trying until problems are available')
+
 args = parser.parse_args()
 
 # See if it was just a numeric ID
@@ -156,17 +188,4 @@ try:
 except ValueError:
     contest_uri = args.contest
 
-print('Retrieving ', contest_uri, '... ', sep='', end='')
-sys.stdout.flush()
-contest_html = urllib.request.urlopen(contest_uri).read().decode('utf-8')
-print('OK ({} bytes).'.format(len(contest_html)))
-
-parser = ContestHTMLParser()
-parser.feed(contest_html)
-problems = parser.getProblems()
-
-print('Found', len(problems), 'problems.')
-
-with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-    for problem in problems:
-        executor.submit(download_problem, contest_uri, problem)
+retrieve()
